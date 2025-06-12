@@ -70,6 +70,7 @@ class Order{
         Quantity GetInitialQuantity() const {return initialQuantity_;}
         Quantity GetRemainingQuantity() const {return remainingQuantity_;}
         Quantity GetFilledQuantity() const {return GetInitialQuantity() - GetRemainingQuantity();}
+        bool isFilled() const {return remainingQuantity_ == 0;}
         void Fill(Quantity quantity){ 
             if (quantity > GetRemainingQuantity())
                 throw std::logic_error("Order  cannot be filled for more than its remaining quantity" + std::to_string(GetOrderId()));
@@ -113,6 +114,128 @@ class OrderModify{
         Side side_;
         Price price_;
         Quantity quantity_;
+};
+
+// representation of a matched order
+// trade object needed - bid, ask
+struct TradeInfo{
+    OrderId orderId_;
+    Price price_;
+    Quantity quantity_;
+};
+
+class Trade{
+    public:
+        Trade(const TradeInfo& bidTrade, const TradeInfo& askTrade){
+            bidTrade_ = bidTrade;
+            askTrade_ = askTrade; 
+        }
+        const  TradeInfo& GetBidTrade() const {return bidTrade_;}
+        const TradeInfo& GetBidTrade() const {return askTrade_;}
+    private:
+        TradeInfo bidTrade_;
+        TradeInfo askTrade_;
+};
+
+// since one order can match a lot of orders
+using Trades = std::vector<Trade>;
+
+// bid are sorted in descending order
+// ask are sorted in ascending order
+class OrderBook{
+    private:
+        struct OrderEntry{
+            OrderPointer order_{nullptr};
+            OrderPointers::iterator location_;
+        };
+
+        std::map<Price, OrderPointers, std::greater<Price>> bids_;
+        std::map<Price, OrderPointers, std::less<Price>> asks_;
+        std::unordered_map<OrderId, OrderEntry> order_;
+
+        // for FillAndKill
+        bool CanMatch(Side side, Price price) const{
+            if (side == Side::Buy) {
+                if(asks_.empty())
+                    return false;
+                const auto& [bestAsk, _] = *asks_.begin();
+                return price >= bestAsk;
+            }
+            else{
+                if(bids_.empty())
+                    return false;
+                const auto& [bestBid, _] = *bids_.begin();
+                return price <= bestBid;
+            }
+        }
+
+        Trades MatchOrders(){
+            Trades trades;
+            trades.reserve(order_.size()); // being pesimestic, if every order matches every other
+
+            while(true){
+                if(bids_.empty() || asks_.empty())
+                    break;
+
+                auto& [bidPrice, bids] = *bids_.begin();
+                auto& [askPrice, asks] = *asks_.begin();
+
+                if(bidPrice < askPrice)
+                    break; // no matches
+
+                while (bids.size() & asks.size()){
+                    auto& bid = bids.front();
+                    auto& ask = asks.front();
+
+                    Quantity quantity = std::min(bid->GetRemainingQuantity(), ask->GetRemainingQuantity());
+
+                    bid->Fill(quantity);
+                    ask->Fill(quantity);
+
+                    if(bid->isFilled()){
+                        bids.pop_front();
+                        order_.erase(bid->GetOrderId());
+                    }
+
+                    if(ask->isFilled()){
+                        asks.pop_front();
+                        order_.erase(ask->GetOrderId());
+                    }
+
+                    if(bids.empty()){
+                        bids_.erase(bidPrice);
+                    }
+
+                    if(asks.empty()){
+                        asks_.erase(askPrice);
+                    }
+// quantity could be part of the constructor of trade object becasue its the same
+                    trades.push_back(Trade { 
+                        TradeInfo{ bid->GetOrderId(), bid->GetPrice(), quantity },
+                        TradeInfo{ ask->GetOrderId(), ask->GetPrice(), quantity}
+                        });
+                }
+            }
+            // make sure the FillAndKill order is removed if not full filled
+            if(!bids_.empty()){
+                auto& [_, bids] = *bids_.begin();
+                auto& order = bids.front();
+                if(order->GetOrderType() == OrderType::FillAndKill)
+                    CancelOrder(order->GetOrderId());
+            }
+
+            if(!asks_.empty()){
+                auto& [_, asks] = *asks_.begin();
+                auto& order = asks.front();
+                if(order->GetOrderType() == OrderType::FillAndKill)
+                    CancelOrder(order->GetOrderId());
+            }
+
+            return trades;
+        }
+        public:
+
+            Trades AddOrder
 };
 int main(){
 
